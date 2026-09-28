@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Tracker Diario</title>
-<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
 :root{--bg:#f7f7f5;--card:#fff;--text:#1a1a1a;--muted:#6b6b6b;--accent:#2f6f4f;--accent-light:#e6f2ec;--border:#e3e3e0;--warn:#c0392b;--mid:#e0a020;box-sizing:border-box;}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#16171a;--card:#1f2023;--text:#f0f0ee;--muted:#9a9a9a;--accent:#4caf82;--accent-light:#1f2e26;--border:#333438;}}
@@ -61,7 +60,6 @@ details summary{cursor:pointer;font-size:.85rem;color:var(--muted);}
 <div class="wrap">
 <h1>🗓️ Tracker Diario</h1>
 <div class="sub">Entrenamiento, sueño, agua, alimentación, lectura, ánimo y gastos — todo en un solo lugar.</div>
-<div id="syncStatus" style="margin:-8px 0 14px;font-size:.8rem;font-weight:600;color:var(--accent);">Versión 5 · iniciando…</div>
 
 <div id="loginBox" class="card"><h3>Iniciar sesión</h3>
 <input type="email" id="loginEmail" placeholder="Correo"><input type="password" id="loginPass" placeholder="Contraseña" style="margin-top:8px;">
@@ -175,7 +173,6 @@ const MOOD_Q=["¿Cómo te sentiste hoy en general?","¿Qué tan cargado de energ
 function dayIndex(dateStr){const d=new Date(dateStr+'T00:00:00');const start=new Date(d.getFullYear(),0,1);return Math.floor((d-start)/86400000);}
 function seededPick(arr,seedStr){let h=0;for(let i=0;i<seedStr.length;i++)h=(h*31+seedStr.charCodeAt(i))>>>0;return arr[h%arr.length];}
 
-function localISO(d){return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);}
 const SUPABASE_URL='https://pcjzhuqpqhqablrtftfk.supabase.co';
 const SUPABASE_KEY='sb_publishable_GCUQoN-X6B4vH1-GDL-FdQ_wEmygfmE';
 const CONFIG_OK=SUPABASE_URL.startsWith('http')&&!SUPABASE_KEY.startsWith('PEGA');
@@ -188,43 +185,27 @@ function getCfg(){return cache.cfg;}
 function setCfg(c){cache.cfg=c;persist();}
 function getMonthlyWeights(){return cache.monthlyWeights;}
 function setMonthlyWeights(o){cache.monthlyWeights=o;persist();}
-function setSync(t,bad){const el=document.getElementById('syncStatus');if(el){el.textContent=t;el.style.color=bad?'var(--warn)':'var(--muted)';}}
-let remoteJson={},remoteSettings='',saving=0,lastWrite=0;
 async function persist(){
-saving++;lastWrite=Date.now();
 try{
-const cur={};cache.entries.forEach(e=>cur[e.date]=JSON.stringify(e));
-const gone=Object.keys(remoteJson).filter(d=>!(d in cur));
+const cur=new Set(cache.entries.map(e=>e.date));
+const gone=[...remoteDates].filter(d=>!cur.has(d));
 if(gone.length){const{error}=await sb.from('entries').delete().in('date',gone);if(error)throw error;}
-const changed=cache.entries.filter(e=>remoteJson[e.date]!==cur[e.date]);
-if(changed.length){const{error}=await sb.from('entries').upsert(changed.map(e=>({date:e.date,data:e})),{onConflict:'user_id,date'});if(error)throw error;}
-const stJ=JSON.stringify([cache.cfg.budget,cache.monthlyWeights]);
-if(stJ!==remoteSettings){const{error}=await sb.from('settings').upsert({budget:cache.cfg.budget,monthly_weights:cache.monthlyWeights},{onConflict:'user_id'});if(error)throw error;remoteSettings=stJ;}
-remoteJson=cur;
-setSync('✓ Guardado en la nube a las '+new Date().toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}));
-}catch(e){setSync('⚠ No se pudo guardar: '+e.message,true);alert('Error al guardar: '+e.message);}
-finally{saving--;lastWrite=Date.now();}
+if(cache.entries.length){const{error}=await sb.from('entries').upsert(cache.entries.map(e=>({date:e.date,data:e})),{onConflict:'user_id,date'});if(error)throw error;}
+const{error}=await sb.from('settings').upsert({budget:cache.cfg.budget,monthly_weights:cache.monthlyWeights},{onConflict:'user_id'});if(error)throw error;
+remoteDates=cur;
+}catch(e){alert('Error al guardar: '+e.message);}
 }
-async function loadRemote(quiet){
+async function loadRemote(){
 const{data:rows,error}=await sb.from('entries').select('date,data');
-if(error){if(!quiet)alert('Error al cargar: '+error.message);return;}
-const{data:st}=await sb.from('settings').select('*').maybeSingle();
-if(saving>0||Date.now()-lastWrite<4000)return;
+if(error){alert('Error al cargar: '+error.message);return;}
 cache.entries=(rows||[]).map(r=>r.data).sort((a,b)=>b.date.localeCompare(a.date));
-remoteJson={};cache.entries.forEach(e=>remoteJson[e.date]=JSON.stringify(e));
+remoteDates=new Set(cache.entries.map(e=>e.date));
+const{data:st}=await sb.from('settings').select('*').maybeSingle();
 cache.cfg={budget:st?st.budget:null};cache.monthlyWeights=st?(st.monthly_weights||{}):{};
-remoteSettings=JSON.stringify([cache.cfg.budget,cache.monthlyWeights]);
-if(!quiet)setSync('Versión 5 · datos cargados ('+cache.entries.length+' días en la nube)');
 cfg=cache.cfg;
 document.getElementById('cfgBudget').value=cfg.budget||'';
-loadDayIntoForm();updateMoodLabel();checkMonthlyWeight();render();renderCalendar();
+refreshChips();updateWaterTotal();updateMoodLabel();checkMonthlyWeight();render();renderCalendar();
 }
-function pollRemote(){
-if(!signedIn||document.hidden||saving>0)return;
-const a=document.activeElement;if(a&&/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName))return;
-loadRemote(true);
-}
-setInterval(pollRemote,6000);
 function showApp(on){signedIn=on;document.getElementById('appBox').style.display=on?'block':'none';document.getElementById('loginBox').style.display=on?'none':'block';}
 async function initStorage(){
 if(!CONFIG_OK){document.getElementById('loginBox').insertAdjacentHTML('afterbegin','<div class="sub" style="color:var(--warn)">Falta pegar tu Project URL y tu clave anon de Supabase dentro del archivo index.html.</div>');return;}
@@ -270,7 +251,7 @@ const v=parseInt(document.getElementById('waterAddMl').value)||0;
 if(v<=0)return;
 state.waterMl+=v;
 document.getElementById('waterAddMl').value='';
-updateWaterTotal();saveCurrent();
+updateWaterTotal();
 };
 
 let state={train:null,waterMl:0,food:null,readDid:null,mood:null};
@@ -287,10 +268,10 @@ document.querySelectorAll('#grpReadDid .chip').forEach(c=>c.onclick=()=>{state.r
 document.querySelectorAll('#grpMood .chip').forEach(c=>c.onclick=()=>{state.mood=c.dataset.val;refreshChips();});
 
 const dateEl=document.getElementById('date');
-const today=localISO(new Date());
+const today=new Date().toISOString().slice(0,10);
 dateEl.value=today;
 function updateMoodLabel(){document.getElementById('moodQLabel').textContent=seededPick(MOOD_Q,dateEl.value);}
-dateEl.addEventListener('change',()=>{updateMoodLabel();checkMonthlyWeight();loadDayIntoForm();});
+dateEl.addEventListener('change',()=>{updateMoodLabel();checkMonthlyWeight();});
 
 function checkMonthlyWeight(){
 const monthKey=dateEl.value.slice(0,7);
@@ -330,44 +311,28 @@ let mins=(eh*60+em)-(sh*60+sm);if(mins<0)mins+=24*60;
 return +(mins/60).toFixed(1);
 }
 
-function buildEntry(){
+document.getElementById('saveBtn').onclick=()=>{
+if(!dateEl.value){alert('Elige una fecha');return;}
 const sStart=document.getElementById('sleepStart').value,sEnd=document.getElementById('sleepEnd').value;
-return{date:dateEl.value,train:state.train,
+const entry={
+date:dateEl.value,
+train:state.train,
 sleep:{start:sStart,end:sEnd,quality:document.getElementById('sleepQuality').value,hours:sleepHours(sStart,sEnd)},
-water:state.waterMl,food:state.food,
+water:state.waterMl,
+food:state.food,
 reading:{did:state.readDid,minutes:state.readDid==='si'?(parseInt(document.getElementById('readMinutes').value)||0):0},
 mood:{q:seededPick(MOOD_Q,dateEl.value),a:state.mood},
-expense:parseFloat(document.getElementById('expense').value)||0};
-}
-function hasData(e){return !!(e.train||e.food||e.reading.did||e.mood.a||e.water>0||e.sleep.start||e.sleep.end||e.sleep.quality||e.expense>0);}
-function saveCurrent(){
-if(!dateEl.value||!signedIn)return;
-const e=buildEntry();
-let entries=getEntries().filter(x=>x.date!==e.date);
-if(hasData(e))entries.push(e);
-entries.sort((a,b)=>b.date.localeCompare(a.date));
-setEntries(entries);render();renderCalendar();
-}
-function loadDayIntoForm(){
-const e=getEntries().find(x=>x.date===dateEl.value);
-state={train:e?e.train:null,waterMl:e?(e.water||0):0,food:e?e.food:null,readDid:e&&e.reading?e.reading.did:null,mood:e&&e.mood?e.mood.a:null};
-document.getElementById('sleepStart').value=e&&e.sleep?e.sleep.start||'':'';
-document.getElementById('sleepEnd').value=e&&e.sleep?e.sleep.end||'':'';
-document.getElementById('sleepQuality').value=e&&e.sleep?e.sleep.quality||'':'';
-document.getElementById('readMinutes').value=e&&e.reading&&e.reading.minutes?e.reading.minutes:'';
-document.getElementById('expense').value=e&&e.expense?e.expense:'';
-refreshChips();updateWaterTotal();
-}
-document.getElementById('saveBtn').onclick=()=>{
-saveCurrent();
-const b=document.getElementById('saveBtn');b.textContent='✓ Guardado';setTimeout(()=>b.textContent='Guardar día',1500);
+expense:parseFloat(document.getElementById('expense').value)||0
 };
-document.querySelectorAll('#appBox .chip').forEach(c=>c.addEventListener('click',()=>saveCurrent()));
-let typeTimer=null;
-function saveSoon(){clearTimeout(typeTimer);typeTimer=setTimeout(saveCurrent,700);}
-['sleepStart','sleepEnd','sleepQuality','readMinutes','expense'].forEach(id=>{const el=document.getElementById(id);el.addEventListener('change',saveCurrent);el.addEventListener('input',saveSoon);});
-document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(typeTimer);saveCurrent();}});
-window.addEventListener('pagehide',()=>{clearTimeout(typeTimer);saveCurrent();});
+let entries=getEntries().filter(e=>e.date!==entry.date);
+entries.push(entry);entries.sort((a,b)=>b.date.localeCompare(a.date));
+setEntries(entries);
+state={train:null,waterMl:0,food:null,readDid:null,mood:null};
+document.getElementById('sleepStart').value='';document.getElementById('sleepEnd').value='';document.getElementById('sleepQuality').value='';
+document.getElementById('readMinutes').value='';document.getElementById('expense').value='';
+updateWaterTotal();
+refreshChips();render();renderCalendar();
+};
 
 function habitSuccess(e){
 const goal=waterGoalMl();
@@ -382,11 +347,11 @@ return s/n;
 function calcHabitStreak(entries){
 if(entries.length===0)return 0;
 const map={};entries.forEach(e=>map[e.date]=e);
-let streak=0,d=new Date();let key=localISO(d);
+let streak=0,d=new Date();let key=d.toISOString().slice(0,10);
 while(true){
 const e=map[key];
-if(e&&habitSuccess(e)){streak++;d.setDate(d.getDate()-1);key=localISO(d);}
-else if(!e&&key===localISO(new Date())){d.setDate(d.getDate()-1);key=localISO(d);continue;}
+if(e&&habitSuccess(e)){streak++;d.setDate(d.getDate()-1);key=d.toISOString().slice(0,10);}
+else if(!e&&key===new Date().toISOString().slice(0,10)){d.setDate(d.getDate()-1);key=d.toISOString().slice(0,10);continue;}
 else break;
 }
 return streak;
@@ -397,7 +362,7 @@ const day=(d.getDay()+6)%7;const mon=new Date(d);mon.setDate(d.getDate()-day);mo
 const sun=new Date(mon);sun.setDate(mon.getDate()+6);
 return[mon,sun];
 }
-function fmt(d){return localISO(d);}
+function fmt(d){return d.toISOString().slice(0,10);}
 
 function render(){
 const entries=getEntries();
@@ -485,7 +450,7 @@ document.getElementById('nextYear').onclick=()=>{calYear++;renderCalendar();};
 function renderCalendar(){
 document.getElementById('yearLabel').textContent=calYear;
 const entries=getEntries();const map={};entries.forEach(e=>map[e.date]=e);
-const todayStr=localISO(new Date());
+const todayStr=new Date().toISOString().slice(0,10);
 let html='';
 for(let m=0;m<12;m++){
 const first=new Date(calYear,m,1);const daysInMonth=new Date(calYear,m+1,0).getDate();
